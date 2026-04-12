@@ -135,6 +135,24 @@ Tested on a real-world entity matching task: 3,681 stores across 10 cities match
 - `pip install torch transformers pandas numpy openpyxl sentence-transformers`
 - `HF_HUB_OFFLINE=1` (prevents HuggingFace network timeout)
 
+## Device & Deployment Notes
+
+**Current design targets MacBook MPS (Apple Silicon).** The BGE device auto-detects `cuda → mps → cpu`, but several MPS-specific optimizations are hardcoded:
+
+| Item | MPS (current) | CUDA (needs manual change) |
+|------|--------------|---------------------------|
+| BGE encode batch_size | 32 (`match.py`, `cached_match.py`) | 64+ for better GPU utilization |
+| CrossEncoder batch_size | 1 (sequential per query) | Can batch multiple queries |
+| Memory cleanup | `torch.mps.empty_cache()` after encoding | `torch.cuda.empty_cache()` |
+| CrossEncoder speed | ~67 pairs/s (MPS) | ~500+ pairs/s (A100) |
+| 10-city CrossEncoder total | ~22 min | ~3-5 min (estimated) |
+
+**To deploy on CUDA server:**
+1. Change `batch_size=32` to `batch_size=64` (or higher) in `encode_texts()` calls in `match.py` and `cached_match.py`
+2. Replace `torch.mps.empty_cache()` with `torch.cuda.empty_cache()` in `cached_match.py` (line 198)
+3. Sync HuggingFace model cache: `rsync -av ~/.cache/huggingface/hub/models--BAAI--bge-large-zh-v1.5/ server:~/.cache/huggingface/hub/models--BAAI--bge-large-zh-v1.5/` and `rsync -av ~/.cache/huggingface/hub/models--BAAI--bge-reranker-v2-m3/ server:~/.cache/huggingface/hub/models--BAAI--bge-reranker-v2-m3/`
+4. `sentence_transformers.CrossEncoder` auto-detects CUDA, no change needed
+
 ## References
 
 - BGE bi-encoder: [HuggingFace: BAAI/bge-large-zh-v1.5](https://huggingface.co/BAAI/bge-large-zh-v1.5)

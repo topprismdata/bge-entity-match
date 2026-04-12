@@ -135,6 +135,24 @@ python scripts/experiment_cross.py \
 - `pip install torch transformers pandas numpy openpyxl sentence-transformers`
 - `HF_HUB_OFFLINE=1`（防止 HuggingFace 网络超时）
 
+## 设备与部署说明
+
+**当前设计针对 MacBook MPS（Apple Silicon）。** BGE 设备自动检测 `cuda → mps → cpu`，但部分 MPS 专用优化是硬编码的：
+
+| 项目 | MPS（当前） | CUDA（需手动修改） |
+|------|-----------|------------------|
+| BGE 编码 batch_size | 32（`match.py`、`cached_match.py`） | 64+，以更好利用 GPU |
+| CrossEncoder batch_size | 1（逐条顺序处理） | 可批量处理多条查询 |
+| 内存清理 | 编码后调用 `torch.mps.empty_cache()` | 改为 `torch.cuda.empty_cache()` |
+| CrossEncoder 速度 | ~67 pairs/s（MPS） | ~500+ pairs/s（A100） |
+| 10城市 CrossEncoder 总耗时 | ~22 分钟 | ~3-5 分钟（预估） |
+
+**部署到 CUDA 服务器：**
+1. 将 `encode_texts()` 调用中的 `batch_size=32` 改为 `batch_size=64`（或更高），涉及 `match.py` 和 `cached_match.py`
+2. 将 `cached_match.py` 中的 `torch.mps.empty_cache()` 替换为 `torch.cuda.empty_cache()`
+3. 同步 HuggingFace 模型缓存：`rsync -av ~/.cache/huggingface/hub/models--BAAI--bge-large-zh-v1.5/ server:~/.cache/huggingface/hub/models--BAAI--bge-large-zh-v1.5/` 和 `rsync -av ~/.cache/huggingface/hub/models--BAAI--bge-reranker-v2-m3/ server:~/.cache/huggingface/hub/models--BAAI--bge-reranker-v2-m3/`
+4. `sentence_transformers.CrossEncoder` 自动检测 CUDA，无需修改
+
 ## 参考文献
 
 - BGE bi-encoder：[HuggingFace: BAAI/bge-large-zh-v1.5](https://huggingface.co/BAAI/bge-large-zh-v1.5)

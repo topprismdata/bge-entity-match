@@ -302,8 +302,11 @@ Both scripts require:
 - `TOKENIZERS_PARALLELISM=false` (prevents fork warning on MPS)
 - Python 3.11+ with: `pip install torch transformers pandas numpy openpyxl sentence-transformers`
 
-On Mac M-series: MPS backend is auto-selected, batch_size=32 recommended.
-On GPU server: CUDA backend is auto-selected, batch_size=64+ recommended.
+**Device: Currently designed for MacBook MPS (Apple Silicon).** BGE auto-detects `cuda → mps → cpu`, but MPS-specific optimizations (batch_size=32, `torch.mps.empty_cache()`) are hardcoded. To deploy on CUDA:
+1. Change `batch_size=32` → `64` in `encode_texts()` calls
+2. Replace `torch.mps.empty_cache()` → `torch.cuda.empty_cache()`
+3. Sync model cache via rsync (both `bge-large-zh-v1.5` and `bge-reranker-v2-m3`)
+4. CrossEncoder auto-detects CUDA, no change needed
 
 ## Output Format
 
