@@ -9,7 +9,7 @@ description: |
   semantic similarity search, matching records by text similarity.
   Also triggers for: running matching experiments, optimizing matching configs,
   comparing matching strategies (TopK, city pre-filter, text cleaning),
-  cached embedding matching, credit code verification.
+  cached embedding matching, credit code verification, CrossEncoder reranking.
 allowed-tools:
   - Bash
   - Read
@@ -19,20 +19,35 @@ allowed-tools:
 
 # BGE Entity Match
 
-Semantic entity matching using BGE bi-encoder — configurable, experiment-driven, no hardcoding.
+Semantic entity matching using BGE bi-encoder + CrossEncoder reranker — configurable, experiment-driven, no hardcoding.
 
 ## Core Idea
 
 Given a **query dataset** (e.g., store list) and a **candidate dataset** (e.g., enterprise registry),
-find the best matching candidate for each query using BGE embeddings + cosine similarity.
+find the best matching candidate for each query using a three-stage pipeline.
 
 ```
-Query text  ──┐
-              ├──▶ BGE encode ──▶ cosine similarity ──▶ Top-K candidates
+Query text  ──┐                         ┌── CrossEncoder ──▶ Reranked Top-K
+              ├──▶ BGE encode ──▶ Top-K ─┘
 Candidate text ─┘
+              ↑
+       City pre-filter (optional)
 ```
 
-## Three Modes
+## Three Stages
+
+### Stage 1: City Pre-filter
+Partition candidates by city. Only search within the query's city.
+Reduces candidate pool by 10-50x, dramatically improves speed AND accuracy.
+
+### Stage 2: BGE Coarse Ranking
+`BAAI/bge-large-zh-v1.5` bi-encoder: mean pooling + L2 normalization → cosine similarity → Top-K.
+
+### Stage 3: CrossEncoder Fine Reranking (Optional)
+`BAAI/bge-reranker-v2-m3` cross-encoder: query+candidate paired encoding → cross-attention → rerank BGE's Top-K.
+Most effective when BGE's Top-1 accuracy is low (e.g., large cities with many similar business names).
+
+## Four Modes
 
 ### 1. Simple Match (`scripts/match.py`)
 One-shot matching with fixed config.
@@ -48,27 +63,8 @@ python scripts/match.py \
   --output results.csv
 ```
 
-### 2. Experiment Mode (`scripts/experiment.py`)
-Systematically explore config space and measure accuracy.
-
-```bash
-python scripts/experiment.py \
-  --query stores.csv \
-  --candidates enterprises.xlsx \
-  --id-col code --name-col store_name --addr-col store_addr \
-  --city-col city_name \
-  --gt-id code \
-  --name "XX品牌匹配实验" \
-  --output-dir ./exp_results
-```
-
-Outputs: `exp_id.json` (raw) + `exp_id_report.md` (readable summary).
-
-**Tip**: When data is already split by city, only run city pre-filter mode (skip global).
-Global mode wastes time and gives the same results on city-specific data.
-
-### 3. Cached Match (`scripts/cached_match.py`)
-Encode candidates once, match multiple queries against cached embeddings. Fastest for large datasets.
+### 2. Cached Match (`scripts/cached_match.py`)
+Encode candidates once, match multiple queries against cached embeddings. Supports CrossEncoder reranking.
 
 ```bash
 # Step 1: Encode and cache candidates (run once)
@@ -77,7 +73,7 @@ python scripts/cached_match.py encode \
   --c-id credit_code --c-name company_name --c-addr reg_addr \
   --cache-dir ./emb_cache
 
-# Step 2: Match + verify
+# Step 2: Match + verify (BGE only)
 python scripts/cached_match.py match \
   --query stores.csv \
   --q-id store_id --q-name store_name --q-addr store_addr \
@@ -88,13 +84,57 @@ python scripts/cached_match.py match \
   --cache-dir ./emb_cache \
   --topk 10 \
   --output results.csv
+
+# Step 3: Match + CrossEncoder reranking
+python scripts/cached_match.py match \
+  --query stores.csv \
+  --q-id store_id --q-name store_name --q-addr store_addr \
+  --q-gt credit_code \
+  --candidates enterprises.xlsx \
+  --c-id credit_code --c-name company_name --c-addr reg_addr \
+  --c-city 所属城市 \
+  --cache-dir ./emb_cache \
+  --topk 50 \
+  --reranker BAAI/bge-reranker-v2-m3 \
+  --topk-rerank 50 \
+  --output results.csv
 ```
 
-Advantages over `match.py`:
-- **Embedding caching**: encode 281K candidates once (~25min), reuse for all future queries
-- **City extraction from address**: auto-extracts city from query address for pre-filtering
-- **Credit code verification**: auto-compares matched ID with query's ground-truth ID
-- **Province filtering**: excludes province-level dirty data from city matching
+### 3. Experiment Mode (`scripts/experiment.py`)
+Systematically explore config space and measure accuracy. Supports `--reranker` for CrossEncoder comparison.
+
+```bash
+python scripts/experiment.py \
+  --query stores.csv \
+  --candidates enterprises.xlsx \
+  --id-col code --name-col store_name --addr-col store_addr \
+  --city-col city_name \
+  --gt-id code \
+  --name "XX品牌匹配实验" \
+  --reranker BAAI/bge-reranker-v2-m3 \
+  --output-dir ./exp_results
+```
+
+Outputs: `exp_id.json` (raw) + `exp_id_report.md` (readable summary).
+
+**Tip**: When data is already split by city, only run city pre-filter mode (skip global).
+Global mode wastes time and gives the same results on city-specific data.
+
+### 4. CrossEncoder Comparison (`scripts/experiment_cross.py`)
+City-partitioned A/B comparison: BGE-only vs BGE+CrossEncoder per city.
+
+```bash
+python scripts/experiment_cross.py \
+  --query stores.csv \
+  --candidates enterprises.xlsx \
+  --q-id code --q-name store_name --q-addr store_addr \
+  --q-gt credit_code \
+  --c-id credit_code --c-name company_name --c-addr reg_addr \
+  --c-city city \
+  --topk 50 \
+  --max-cities 10 \
+  --output-dir ./exp_results
+```
 
 ## Column Configuration
 
@@ -112,6 +152,8 @@ Advantages over `match.py`:
 | `--c-city` | City column in candidates | `所属城市` |
 | `--city-col` | City column (experiment.py) | `city` |
 | `--gt-id` | Ground-truth ID for accuracy eval | `true_code` |
+| `--reranker` | CrossEncoder model name | `BAAI/bge-reranker-v2-m3` |
+| `--topk-rerank` | Candidates to rerank | `50` |
 
 If `--gt-id` or `--q-gt` is provided, the script computes **Top-1/3/10 accuracy** automatically.
 
@@ -161,8 +203,8 @@ Run experiments BEFORE tuning. Systematic exploration beats intuition:
 
 ```
 Config matrix:
-  TopK ∈ {10, 50, 100} × {city pre-filter: on}
-  → 3 experiments per dataset (skip global when data is city-split)
+  TopK ∈ {10, 50, 100} × {city pre-filter: on/off} × {CrossEncoder: on/off}
+  → 3-6 experiments per dataset
 
 For each experiment:
   1. Run matching with that config
@@ -172,25 +214,33 @@ For each experiment:
 Read the report markdown → identify the winning config → apply it.
 ```
 
-Key signal: **city pre-filter almost always helps** (reduces noise from same-name businesses in other cities).
+Key signals:
+- **City pre-filter almost always helps** (reduces noise from same-name businesses in other cities)
+- **CrossEncoder helps most when BGE Top-1 is low** (large cities, similar business names)
+- **CrossEncoder is NOT effective without city pre-filtering** (candidate pool too large, correct answer already in Top-50)
 
 ## Optimization Levers
 
 When accuracy is low, improve in this order:
 
-1. **Text cleaning** — add domain stopwords, strip brand suffixes
-2. **Pre-filter granularity** — city → district → landmark
-3. **TopK** — increase if candidate pool is very large (>5,000)
-4. **Candidate pool size** — reduce if pool has many irrelevant entries
-5. **Name+addr weighting** — if names are distinctive, addr noise hurts; try name-only query
+1. **City pre-filter** — mandatory, reduces candidate pool 10-50x
+2. **Text cleaning** — add domain stopwords, strip brand suffixes
+3. **CrossEncoder reranking** — +14pp Top-1 on average, up to +31pp on hard cities
+4. **TopK** — increase if candidate pool is very large (>5,000)
+5. **Candidate pool size** — reduce if pool has many irrelevant entries
+6. **Name+addr weighting** — if names are distinctive, addr noise hurts; try name-only query
 
 ## Model Selection
 
-Default: `BAAI/bge-large-zh-v1.5` (1024-dim, MPS/CUDA)
+**BGE bi-encoder** (Stage 2):
+- Default: `BAAI/bge-large-zh-v1.5` (1024-dim, MPS/CUDA)
+- Speed-critical: `BAAI/bge-base-zh-v1.5` (768-dim, ~2x faster)
 
-For speed-critical scenarios: `BAAI/bge-base-zh-v1.5` (768-dim, ~2x faster)
+**CrossEncoder reranker** (Stage 3):
+- Default: `BAAI/bge-reranker-v2-m3` (multilingual, max_length=512)
+- Requires `sentence-transformers` package
 
-Override with `--model <model_name>` in both scripts.
+Override with `--model <model_name>` for BGE, `--reranker <model_name>` for CrossEncoder.
 
 ## Performance Benchmarks
 
@@ -198,7 +248,22 @@ On Mac M-series (MPS), BGE-large-zh-v1.5:
 - Encode 15K queries: ~3 min
 - Encode 280K candidates: ~25 min (cache once, reuse)
 - Match 15K queries against 280K cached candidates with city pre-filter: ~3 min
-- Total with caching: **~6 min** (vs 7+ hours without caching per-city)
+- CrossEncoder reranking (per city, ~3-5K candidates × ~400 queries): ~2-3 min
+- **10-city experiment**: ~6 min BGE + ~22 min CrossEncoder = ~28 min total
+
+### Accuracy Benchmarks (Real-world: 3,681 stores × 281K enterprises)
+
+| Method | Top-1 | Top-3 | Top-10 |
+|--------|-------|-------|--------|
+| BGE only (no city filter) | 3.9% | — | — |
+| City pre-filter + BGE (269 cities) | 68.9% | 81.4% | 89.3% |
+| City pre-filter + BGE (Top-10 cities) | 60.1% | 71.1% | 80.4% |
+| **City + BGE + CrossEncoder** (Top-10 cities) | **73.9%** | **81.9%** | **86.6%** |
+
+CrossEncoder delivers +13.9pp Top-1 on average, with the biggest gains on hard cities:
+- Chengdu: BGE 36.8% → +CE 67.7% (+31pp)
+- Shanghai: BGE 45.9% → +CE 67.0% (+21pp)
+- Suzhou: BGE 44.0% → +CE 61.6% (+18pp)
 
 ## References
 
@@ -207,17 +272,24 @@ This skill encapsulates patterns discovered through systematic experimentation:
 - **BGE bi-encoder**: [HuggingFace: BAAI/bge-large-zh-v1.5](https://huggingface.co/BAAI/bge-large-zh-v1.5)
   Mean pooling + L2 normalization is the standard approach for sentence-level similarity.
 
+- **CrossEncoder reranker**: [HuggingFace: BAAI/bge-reranker-v2-m3](https://huggingface.co/BAAI/bge-reranker-v2-m3)
+  Cross-attention between query-candidate pairs produces more accurate similarity scores than bi-encoder alone.
+
 - **City pre-filter strategy**: Discovered empirically in QCC matching experiments (2026-04).
   Partitioning by city reduces 10-50x candidate pool and consistently improves Top-1 accuracy
   because businesses with identical names in different cities are common noise sources.
 
+- **CrossEncoder is only effective after city pre-filtering**: On national data (281K candidates),
+  CrossEncoder shows near-zero improvement because the correct answer is already ranked high
+  by BGE. After city pre-filtering (3-5K candidates per city), CrossEncoder's cross-attention
+  can effectively distinguish between similar candidates. Impact: +13.9pp Top-1 on 10-city experiment.
+
 - **Province dirty data**: 天眼查 `所属城市` column contains province names (e.g., "贵州省", "河北省")
   with 1-16 entries. These produce 0% match accuracy. Always filter them out before matching.
-  Impact: filtering provinces improved Top-1 from 53.6% to 69.5% on a 15K query dataset.
 
 - **Text cleaning for entity matching**: Brand names in franchise data (e.g., "XX眼镜")
   often don't appear in official registration names — stripping them from query text
-  before encoding dramatically improves recall. See `QCC_FuzzySearch.md` §BGE-QCC.
+  before encoding dramatically improves recall.
 
 - **Candidate pool coverage ceiling**: When candidate data comes from a secondary source
   (e.g., Tianyancha), not all ground-truth entities are present. Matching accuracy
@@ -228,7 +300,7 @@ This skill encapsulates patterns discovered through systematic experimentation:
 Both scripts require:
 - `HF_HUB_OFFLINE=1` (prevents HuggingFace network timeout)
 - `TOKENIZERS_PARALLELISM=false` (prevents fork warning on MPS)
-- Python 3.11+ with: `pip install torch transformers pandas numpy openpyxl`
+- Python 3.11+ with: `pip install torch transformers pandas numpy openpyxl sentence-transformers`
 
 On Mac M-series: MPS backend is auto-selected, batch_size=32 recommended.
 On GPU server: CUDA backend is auto-selected, batch_size=64+ recommended.
@@ -245,12 +317,15 @@ query_id, matched_id, rank, similarity, cand_text
 query_id, query_name, city, matched_id, matched_name, rank, similarity, verified
 ```
 
-`experiment.py` additionally outputs a Markdown report with a comparison table:
+`experiment.py` outputs a Markdown report with a comparison table:
 ```
-| TopK | 分治 | Top-1 | Top-3 | Top-10 |
-|------|------|-------|-------|--------|
-|  50  |  是  | 76.6% | 82.1% |  86.8% |
+| TopK | 分治 | 精排 | Top-1 | Top-3 | Top-10 |
+|------|------|------|-------|-------|--------|
+|  50  |  是  |  -   | 60.1% | 71.1% |  80.4% |
+|  50  |  是  |  CE  | 73.9% | 81.9% |  86.6% |
 ```
+
+`experiment_cross.py` outputs per-city breakdown with BGE vs BGE+CrossEncoder comparison.
 
 ## Key Principle
 
@@ -259,12 +334,17 @@ query_id, query_name, city, matched_id, matched_name, rank, similarity, verified
 2. Preprocess if needed: fix column names, extract city from addresses
 3. Run `cached_match.py encode` to cache candidate embeddings
 4. Run `cached_match.py match` with city pre-filter + credit code verification
-5. Or run `experiment.py` to find the best TopK + pre-filter strategy
+5. If accuracy is unsatisfactory, add `--reranker` for CrossEncoder fine reranking
+6. Or run `experiment_cross.py` to quantify CrossEncoder improvement per city
 
 Do not write new Python code unless the data format is genuinely unsupported.
 
 ## Changelog
 
-- **2026-04-12**: Fixed `match.py` `_match_by_city` and `_match_flat` variable scope bug (`q_texts` not passed).
+- **2026-04-12**: Added CrossEncoder reranking support.
+  Updated `cached_match.py` with `--reranker` and `--topk-rerank` parameters.
+  Updated `experiment.py` with `--reranker` for comparison experiments.
+  Added `scripts/experiment_cross.py` for city-partitioned A/B comparison.
+  Updated SKILL.md with three-stage pipeline documentation and benchmarks.
+- **2026-04-12 (earlier)**: Fixed `match.py` `_match_by_city` and `_match_flat` variable scope bug (`q_texts` not passed).
   Added `cached_match.py` with embedding caching, city extraction, province filtering, credit code verification.
-  Updated SKILL.md with city extraction pitfalls and caching workflow.
