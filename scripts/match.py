@@ -118,14 +118,14 @@ def match(query_df, cand_df, args):
     # 2. 分治策略
     if args.city and args.city in query_df.columns and args.city in cand_df.columns:
         print(f"[策略] 城市分治模式", file=sys.stderr)
-        results = _match_by_city(query_df, q_valid_idx, q_embs, cand_df, c_texts, c_embs, args)
+        results = _match_by_city(query_df, q_valid_idx, q_texts, q_embs, cand_df, c_texts, c_embs, args)
     else:
-        results = _match_flat(query_df, q_valid_idx, q_embs, cand_df, c_texts, c_embs, args)
+        results = _match_flat(query_df, q_valid_idx, q_texts, q_embs, cand_df, c_texts, c_embs, args)
 
     print(f"[完成] {len(results)} 条结果，耗时 {time.time()-t0:.1f}s", file=sys.stderr)
     return results
 
-def _match_flat(query_df, q_valid_idx, q_embs, cand_df, c_texts, c_embs, args):
+def _match_flat(query_df, q_valid_idx, q_texts, q_embs, cand_df, c_texts, c_embs, args):
     cand_ids = cand_df[args.c_id].values.tolist()
     actual_k = min(args.topk, len(c_embs))
     top_idx = topk_batch(q_embs, c_embs, actual_k)
@@ -142,11 +142,11 @@ def _match_flat(query_df, q_valid_idx, q_embs, cand_df, c_texts, c_embs, args):
                 'rank': rank + 1,
                 'similarity': round(sim, 4),
                 'cand_text': c_texts[ci],
-                'query_text': q_texts[qi] if 'q_texts' in dir() else '',
+                'query_text': q_texts[qi],
             })
     return results
 
-def _match_by_city(query_df, q_valid_idx, q_embs, cand_df, c_texts, c_embs, args):
+def _match_by_city(query_df, q_valid_idx, q_texts, q_embs, cand_df, c_texts, c_embs, args):
     # 构建城市→候选索引映射
     city_groups = {}
     for i, row in cand_df.iterrows():
@@ -155,7 +155,6 @@ def _match_by_city(query_df, q_valid_idx, q_embs, cand_df, c_texts, c_embs, args
             city_groups[city] = []
         city_groups[city].append(i)
 
-    q_texts_local = [q_texts[i] if i < len(q_texts) else '' for i in q_valid_idx]
     cand_ids = cand_df[args.c_id].values.tolist()
 
     results = []

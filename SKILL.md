@@ -8,7 +8,8 @@ description: |
   fuzzy matching between datasets, name+address matching, enterprise deduplication,
   semantic similarity search, matching records by text similarity.
   Also triggers for: running matching experiments, optimizing matching configs,
-  comparing matching strategies (TopK, city pre-filter, text cleaning).
+  comparing matching strategies (TopK, city pre-filter, text cleaning),
+  cached embedding matching, credit code verification.
 allowed-tools:
   - Bash
   - Read
@@ -31,7 +32,7 @@ Query text  ──┐
 Candidate text ─┘
 ```
 
-## Two Modes
+## Three Modes
 
 ### 1. Simple Match (`scripts/match.py`)
 One-shot matching with fixed config.
@@ -63,6 +64,38 @@ python scripts/experiment.py \
 
 Outputs: `exp_id.json` (raw) + `exp_id_report.md` (readable summary).
 
+**Tip**: When data is already split by city, only run city pre-filter mode (skip global).
+Global mode wastes time and gives the same results on city-specific data.
+
+### 3. Cached Match (`scripts/cached_match.py`)
+Encode candidates once, match multiple queries against cached embeddings. Fastest for large datasets.
+
+```bash
+# Step 1: Encode and cache candidates (run once)
+python scripts/cached_match.py encode \
+  --candidates enterprises.xlsx \
+  --c-id credit_code --c-name company_name --c-addr reg_addr \
+  --cache-dir ./emb_cache
+
+# Step 2: Match + verify
+python scripts/cached_match.py match \
+  --query stores.csv \
+  --q-id store_id --q-name store_name --q-addr store_addr \
+  --q-gt credit_code \
+  --candidates enterprises.xlsx \
+  --c-id credit_code --c-name company_name --c-addr reg_addr \
+  --c-city 所属城市 \
+  --cache-dir ./emb_cache \
+  --topk 10 \
+  --output results.csv
+```
+
+Advantages over `match.py`:
+- **Embedding caching**: encode 281K candidates once (~25min), reuse for all future queries
+- **City extraction from address**: auto-extracts city from query address for pre-filtering
+- **Credit code verification**: auto-compares matched ID with query's ground-truth ID
+- **Province filtering**: excludes province-level dirty data from city matching
+
 ## Column Configuration
 
 **Never hardcode column names.** The skill reads them from user input or file inspection.
@@ -72,14 +105,15 @@ Outputs: `exp_id.json` (raw) + `exp_id_report.md` (readable summary).
 | `--q-id` | Unique ID in query dataset | `store_id` |
 | `--q-name` | Name field in query | `store_name` |
 | `--q-addr` | Address field in query | `store_addr` |
+| `--q-gt` | Ground-truth ID for verification | `credit_code` |
 | `--c-id` | Unique ID in candidate dataset | `credit_code` |
 | `--c-name` | Name field in candidates | `company_name` |
 | `--c-addr` | Address field in candidates | `reg_addr` |
-| `--city-col` | City/region column (enables pre-filter) | `city` |
+| `--c-city` | City column in candidates | `所属城市` |
+| `--city-col` | City column (experiment.py) | `city` |
 | `--gt-id` | Ground-truth ID for accuracy eval | `true_code` |
 
-If `--gt-id` is provided and equals `--c-id` (i.e., both datasets share the ID column),
-the script computes **Top-1/3/10 accuracy** automatically.
+If `--gt-id` or `--q-gt` is provided, the script computes **Top-1/3/10 accuracy** automatically.
 
 ## Pre-filtering Strategy
 
@@ -91,6 +125,17 @@ the script computes **Top-1/3/10 accuracy** automatically.
 - Fall back to brute force if no pre-filter field is available.
 
 Rule: pre-filter cardinality should be 500–5,000 candidates per sub-pool for best results.
+
+### City Extraction Pitfall
+
+When extracting city from query addresses, **beware of province names in the candidate city column**.
+Enterprise data (e.g., 天眼查) often contains province names like "贵州省", "河北省" with very few entries (1-16).
+These are dirty data — matching against them yields 0% accuracy.
+
+Fix: filter candidate cities to only include entries with >=20 candidates OR proper city names (ending in "市"),
+plus the 4 municipalities (北京市, 上海市, 天津市, 重庆市). The `cached_match.py` script handles this automatically.
+
+When extracting city from address, match **longest first** to prefer "贵阳市" over "贵州省".
 
 ## Text Building
 
@@ -116,8 +161,8 @@ Run experiments BEFORE tuning. Systematic exploration beats intuition:
 
 ```
 Config matrix:
-  TopK ∈ {10, 50, 100} × {city pre-filter: on, off}
-  → 6 experiments per dataset
+  TopK ∈ {10, 50, 100} × {city pre-filter: on}
+  → 3 experiments per dataset (skip global when data is city-split)
 
 For each experiment:
   1. Run matching with that config
@@ -147,6 +192,14 @@ For speed-critical scenarios: `BAAI/bge-base-zh-v1.5` (768-dim, ~2x faster)
 
 Override with `--model <model_name>` in both scripts.
 
+## Performance Benchmarks
+
+On Mac M-series (MPS), BGE-large-zh-v1.5:
+- Encode 15K queries: ~3 min
+- Encode 280K candidates: ~25 min (cache once, reuse)
+- Match 15K queries against 280K cached candidates with city pre-filter: ~3 min
+- Total with caching: **~6 min** (vs 7+ hours without caching per-city)
+
 ## References
 
 This skill encapsulates patterns discovered through systematic experimentation:
@@ -157,6 +210,10 @@ This skill encapsulates patterns discovered through systematic experimentation:
 - **City pre-filter strategy**: Discovered empirically in QCC matching experiments (2026-04).
   Partitioning by city reduces 10-50x candidate pool and consistently improves Top-1 accuracy
   because businesses with identical names in different cities are common noise sources.
+
+- **Province dirty data**: 天眼查 `所属城市` column contains province names (e.g., "贵州省", "河北省")
+  with 1-16 entries. These produce 0% match accuracy. Always filter them out before matching.
+  Impact: filtering provinces improved Top-1 from 53.6% to 69.5% on a 15K query dataset.
 
 - **Text cleaning for entity matching**: Brand names in franchise data (e.g., "XX眼镜")
   often don't appear in official registration names — stripping them from query text
@@ -183,6 +240,11 @@ On GPU server: CUDA backend is auto-selected, batch_size=64+ recommended.
 query_id, matched_id, rank, similarity, cand_text
 ```
 
+`cached_match.py` outputs:
+```
+query_id, query_name, city, matched_id, matched_name, rank, similarity, verified
+```
+
 `experiment.py` additionally outputs a Markdown report with a comparison table:
 ```
 | TopK | 分治 | Top-1 | Top-3 | Top-10 |
@@ -194,7 +256,15 @@ query_id, matched_id, rank, similarity, cand_text
 
 **Configuration over code.** When you encounter a new dataset:
 1. Inspect columns → pick the right `--q-id`, `--q-name`, `--q-addr` etc.
-2. Run experiment.py → find the best TopK + pre-filter strategy
-3. Run match.py with those settings → get results
+2. Preprocess if needed: fix column names, extract city from addresses
+3. Run `cached_match.py encode` to cache candidate embeddings
+4. Run `cached_match.py match` with city pre-filter + credit code verification
+5. Or run `experiment.py` to find the best TopK + pre-filter strategy
 
 Do not write new Python code unless the data format is genuinely unsupported.
+
+## Changelog
+
+- **2026-04-12**: Fixed `match.py` `_match_by_city` and `_match_flat` variable scope bug (`q_texts` not passed).
+  Added `cached_match.py` with embedding caching, city extraction, province filtering, credit code verification.
+  Updated SKILL.md with city extraction pitfalls and caching workflow.
