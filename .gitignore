@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+*.npz
+*.emb_cache/
+exp_results/
+*.csv
+*.xlsx
+*.xls
+.DS_Store
