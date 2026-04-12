@@ -1,5 +1,11 @@
 # BGE 实体匹配
 
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C.svg)](https://pytorch.org/)
+[![sentence-transformers](https://img.shields.io/badge/sentence--transformers-2.2%2B-FF6F00.svg)](https://www.sbert.net/)
+[![HuggingFace BAAI/bge-large-zh-v1.5](https://img.shields.io/badge/%F0%9F%A4%97-bge--large--zh--v1.5-yellow.svg)](https://huggingface.co/BAAI/bge-large-zh-v1.5)
+[![HuggingFace BAAI/bge-reranker-v2-m3](https://img.shields.io/badge/%F0%9F%A4%97-bge--reranker--v2--m3-yellow.svg)](https://huggingface.co/BAAI/bge-reranker-v2-m3)
+
 基于 BGE bi-encoder + CrossEncoder 精排的语义实体匹配 — 可配置、实验驱动、无硬编码。
 
 ## 概述
