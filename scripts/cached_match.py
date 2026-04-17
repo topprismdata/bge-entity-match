@@ -29,6 +29,7 @@ BGE Cached Embedding Match — 缓存嵌入 + 城市分治 + 信用代码验证 
       --topk 50 \
       --reranker BAAI/bge-reranker-v2-m3 \
       --topk-rerank 50 \
+      --ce-batch-size 256 \
       --output results.csv
 
 核心优化：
@@ -55,25 +56,50 @@ from match import clean_text, build_query_text, build_cand_text, encode_texts
 # ── CrossEncoder 全局缓存 ──
 _ce_model = None
 
-def load_cross(model_name='BAAI/bge-reranker-v2-m3'):
-    """加载CrossEncoder（延迟加载，全局缓存）"""
+def load_cross(model_name='BAAI/bge-reranker-v2-m3', device='mps'):
+    """加载CrossEncoder（延迟加载，全局缓存，MPS加速）"""
     global _ce_model
     if _ce_model is None:
         from sentence_transformers import CrossEncoder
-        print(f"  [CrossEncoder] Loading {model_name}...", file=sys.stderr)
-        _ce_model = CrossEncoder(model_name, max_length=512)
+        print(f"  [CrossEncoder] Loading {model_name} on {device}...", file=sys.stderr)
+        _ce_model = CrossEncoder(model_name, max_length=512, device=device)
     return _ce_model
 
-def cross_rerank(q_texts, c_texts, top_idx, topk_rerank=50):
-    """对BGE粗排结果进行CrossEncoder精排"""
+def cross_rerank(q_texts, c_texts, top_idx, topk_rerank=50, batch_size=256):
+    """对BGE粗排结果进行CrossEncoder精排（批量优化版）
+
+    优化策略：
+    1. 将所有 query-candidate pairs 展平为一个大列表
+    2. 一次性调用 predict() + 大 batch_size，减少 Python↔C++ 切换
+    3. 按 boundary 拆分回各 query 并排序
+    """
     ce = load_cross()
-    reranked = []
+
+    # Stage 1: 展平所有 pairs，记录每条 query 的边界
+    all_pairs: list[list[str]] = []
+    boundaries: list[tuple[int, int]] = []
     for qt, ti in zip(q_texts, top_idx):
-        pairs = [[qt, c_texts[j]] for j in ti[:topk_rerank]]
-        scores = ce.predict(pairs)
+        n = min(len(ti), topk_rerank)
+        start = len(all_pairs)
+        for j in ti[:n]:
+            all_pairs.append([qt, c_texts[j]])
+        boundaries.append((start, len(all_pairs)))
+
+    total = len(all_pairs)
+    print(f"  [CrossEncoder] {total} pairs, batch_size={batch_size}", file=sys.stderr)
+
+    # Stage 2: 批量预测（sentence_transformers 内部按 batch_size 分批）
+    all_scores = ce.predict(all_pairs, batch_size=batch_size)
+
+    # Stage 3: 按边界拆分 + 降序排序
+    reranked = []
+    for qi, (start, end) in enumerate(boundaries):
+        scores = all_scores[start:end]
+        ti = top_idx[qi][: end - start]
         sorted_idx = np.argsort(-scores)
-        reranked.append(ti[:topk_rerank][sorted_idx])
-    return np.array(reranked)
+        reranked.append(ti[sorted_idx])
+
+    return reranked  # list of arrays (lengths may vary across queries)
 
 def build_text_simple(name, addr):
     parts = []
@@ -159,11 +185,25 @@ def cmd_match(args):
     valid_cities = get_valid_cities(cand_df, args.c_city)
     print(f"  Valid cities: {len(valid_cities)}", file=sys.stderr)
 
-    if valid_cities and args.q_addr:
+    # 优先使用预提取的城市列
+    if args.q_city and args.q_city in query_df.columns:
+        query_df['_city'] = query_df[args.q_city].astype(str).str.strip()
+        # 确保城市名与候选库对齐（补'市'后缀）
+        city_set = set(valid_cities)
+        def align_city(c):
+            if c in city_set:
+                return c
+            if c + '市' in city_set:
+                return c + '市'
+            return c
+        query_df['_city'] = query_df['_city'].apply(align_city)
+        city_found = (query_df['_city'] != '').sum()
+        print(f"  City from pre-extracted column: {city_found}/{len(query_df)} ({city_found/len(query_df)*100:.1f}%)", file=sys.stderr)
+    elif valid_cities and args.q_addr:
         query_df['_city'] = query_df[args.q_addr].apply(
             lambda a: extract_city_from_addr(a, valid_cities))
         city_found = (query_df['_city'] != '').sum()
-        print(f"  City extracted: {city_found}/{len(query_df)} ({city_found/len(query_df)*100:.1f}%)", file=sys.stderr)
+        print(f"  City extracted from address: {city_found}/{len(query_df)} ({city_found/len(query_df)*100:.1f}%)", file=sys.stderr)
     else:
         query_df['_city'] = ''
 
@@ -243,7 +283,8 @@ def cmd_match(args):
         t1 = time.time()
         print(f"  CrossEncoder reranking {len(q_texts)} queries...", file=sys.stderr)
         all_top_idx = cross_rerank(q_texts, c_texts, np.array(all_top_idx, dtype=object),
-                                   topk_rerank=args.topk_rerank)
+                                   topk_rerank=args.topk_rerank,
+                                   batch_size=args.ce_batch_size)
         t_rerank = time.time() - t1
         print(f"  CrossEncoder done in {t_rerank:.0f}s", file=sys.stderr)
 
@@ -307,6 +348,7 @@ def main():
     p_match.add_argument('--q-id', required=True)
     p_match.add_argument('--q-name', default='')
     p_match.add_argument('--q-addr', default='')
+    p_match.add_argument('--q-city', default='', help='Pre-extracted city column in query (skips address extraction)')
     p_match.add_argument('--q-gt', default='', help='Query column with ground-truth ID for verification')
     p_match.add_argument('--c-id', required=True)
     p_match.add_argument('--c-name', default='')
@@ -316,6 +358,7 @@ def main():
     p_match.add_argument('--topk', type=int, default=10, help='TopK candidates from BGE coarse ranking')
     p_match.add_argument('--reranker', default='', help='CrossEncoder model name (e.g. BAAI/bge-reranker-v2-m3). If empty, skip reranking.')
     p_match.add_argument('--topk-rerank', type=int, default=50, help='Number of BGE TopK candidates to rerank with CrossEncoder')
+    p_match.add_argument('--ce-batch-size', type=int, default=256, help='CrossEncoder predict batch size (larger=faster on GPU/MPS)')
     p_match.add_argument('--output', default='match_results.csv')
 
     args = ap.parse_args()

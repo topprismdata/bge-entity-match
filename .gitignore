@@ -8,3 +8,7 @@ exp_results/
 *.xlsx
 *.xls
 .DS_Store
+match_results/
+*.pkl
+*.npy
+checkpoints/
