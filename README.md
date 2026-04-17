@@ -159,6 +159,10 @@ Tested on a real-world entity matching task: 3,681 stores across 10 cities match
 3. Sync HuggingFace model cache: `rsync -av ~/.cache/huggingface/hub/models--BAAI--bge-large-zh-v1.5/ server:~/.cache/huggingface/hub/models--BAAI--bge-large-zh-v1.5/` and `rsync -av ~/.cache/huggingface/hub/models--BAAI--bge-reranker-v2-m3/ server:~/.cache/huggingface/hub/models--BAAI--bge-reranker-v2-m3/`
 4. `sentence_transformers.CrossEncoder` auto-detects CUDA, no change needed
 
+## Contributors
+
+- **[YY-C8](https://github.com/YY-C8)** — Core contributor (BGE-M3 pipeline, LoRA fine-tuning, fusion optimization)
+
 ## References
 
 - BGE bi-encoder: [HuggingFace: BAAI/bge-large-zh-v1.5](https://huggingface.co/BAAI/bge-large-zh-v1.5)
