@@ -1,0 +1,37 @@
+topprism:
+  purpose: world_model
+  capability: entity_resolution
+  platform_layer: business_world_model
+  maturity: real_data_validated
+  evidence:
+    type: operational_data
+    scope: "3,681 query stores; 281K enterprise candidates; 10-city CrossEncoder comparison; 269-city BGE-only evaluation"
+  product_context:
+    - data_standardization
+    - customer_master
+    - outlet_resolution
+    - business_world_model
+
+business_question:
+  en: >-
+    When two enterprise systems describe a store or company differently,
+    are they referring to the same real-world entity, and how can this
+    decision be made reliable enough to feed downstream territory,
+    opportunity and visit decisions?
+  zh: >-
+    当两个企业系统对同一家门店或公司有不同描述时，它们是否指向同一个
+    现实实体？这个判断需要达到怎样的可靠性，才能支撑下游的商圈、
+    机会点与拜访决策？
+
+platform:
+  system: decision_intelligence
+  layer: business_world_model
+  solution: entity_resolution
+
+website:
+  product_path: /world-model/entity-resolution
+  evidence_path: /evidence/bge-entity-match
+
+repository:
+  owner: topprismdata
+  public: true
