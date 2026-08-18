@@ -254,41 +254,31 @@ implementation documentation.
 
 ## Hardware & performance notes
 
-Move device-specific detail to `docs/deployment.md`.
-
-The README should only state that the implementation supports:
+The current implementation supports:
 
 -   CUDA;
 -   Apple Silicon / MPS;
 -   CPU fallback.
 
-Avoid putting estimated A100 throughput in the public evidence section
-unless it has been directly benchmarked on that hardware.
+Device-specific tuning detail (batch sizes, memory-management routines,
+CUDA-vs-MPS porting notes) is kept out of this README and lives in
+implementation documentation that ships with the code. Estimated A100
+throughput is not part of the public evidence because it has not been
+directly benchmarked on that hardware.
 
 ------------------------------------------------------------------------
 
 ## Data, privacy & reproducibility
 
-Recommended additions:
+The published evaluation uses anonymized enterprise records; raw customer
+data is not included in this repository. The evaluation protocol, ground-
+truth construction, city-filter rules, evaluation population and failure
+taxonomy are part of the implementation documentation that ships with the
+code.
 
-### `DATA_PROVENANCE.md`
-
-Document:
-
--   evaluation dataset provenance;
--   whether records are customer, partner, public, or synthetic;
--   anonymization / redistribution constraints;
--   which raw files are intentionally excluded.
-
-### `docs/evaluation.md`
-
-Document:
-
--   ground-truth construction;
--   city-filter rules;
--   evaluation population;
--   failure taxonomy;
--   precision / recall or abstention strategy if added later.
+For enterprise entity resolution, **false positives can be more damaging
+than unmatched records**. A production path should therefore support
+confidence thresholds, abstention, and human review.
 
 For enterprise entity resolution, **false positives can be more damaging
 than unmatched records**. A production path should therefore support
@@ -313,7 +303,7 @@ These are world-modeling constraints, not merely model limitations.
 
 ------------------------------------------------------------------------
 
-## Recommended next experiments
+## Roadmap
 
 1.  confidence calibration and abstention;
 2.  address-specific structured features;
